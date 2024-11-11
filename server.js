@@ -18,66 +18,74 @@ const db = mysql.createPool({
   database: process.env.DB_NAME || 'sjd-bd',
 });
 
+// Rota de Registro para Juízes e Funcionários Públicos
 app.post('/register', async (req, res) => {
-  const { email, cpf, telefone, nome_completo, senha, role } = req.body;
+  const { nome, email, cpf, senha, role, cargo, departamento } = req.body;
 
-  if (!email || !cpf || !telefone || !nome_completo || !senha || !role) {
-    return res.status(400).json({ error: 'Todos os campos são obrigatórios.' });
+  if (!nome || !email || !cpf || !senha || !role) {
+    return res.status(400).json({ error: 'Todos os campos obrigatórios devem ser preenchidos.' });
   }
 
   try {
-    const [[{ count }]] = await db.query('SELECT COUNT(*) AS count FROM usuarios WHERE email = ?', [email]);
+    let query, values;
 
-    if (count > 0) {
-      return res.status(400).json({ error: 'Usuário já existe' });
+    if (role === 'juiz') {
+      query = 'INSERT INTO juizes (nome, email, cpf, senha, role_id) VALUES (?, ?, ?, ?, (SELECT id FROM roles WHERE nome_role = ?))';
+      values = [nome, email, cpf, await bcrypt.hash(senha, 10), 'juiz'];
+    } else if (role === 'funcionario_publico') {
+      query = 'INSERT INTO funcionarios_publicos (nome, email, cpf, senha, cargo, departamento, role_id) VALUES (?, ?, ?, ?, ?, ?, (SELECT id FROM roles WHERE nome_role = ?))';
+      values = [nome, email, cpf, await bcrypt.hash(senha, 10), cargo, departamento, 'funcionario_publico'];
+    } else {
+      return res.status(400).json({ error: 'Role inválido.' });
     }
 
-    const hashedPassword = await bcrypt.hash(senha, 10);
-    const [result] = await db.query(
-      'INSERT INTO usuarios (email, cpf, telefone, nome_completo, senha, role) VALUES (?, ?, ?, ?, ?, ?)',
-      [email, cpf, telefone, nome_completo, hashedPassword, role]
-    );
+    const [result] = await db.query(query, values);
 
     if (!result.insertId) {
       throw new Error('Erro ao inserir usuário no banco de dados.');
     }
 
-    let redirectUrl = '';
-    if (role === 'juiz') redirectUrl = '/home-juiz';
-    else if (role === 'cidadao') redirectUrl = '/home-cidadao';
-    else if (role === 'promotor') redirectUrl = '/home-promotor';
-
-    return res.status(201).json({ message: 'Usuário cadastrado com sucesso!', redirectUrl, userId: result.insertId });
+    res.status(201).json({ message: 'Usuário cadastrado com sucesso!', userId: result.insertId });
   } catch (error) {
     console.error('Erro no registro:', error);
     res.status(500).json({ error: `Erro no servidor durante o registro: ${error.message}` });
   }
 });
 
-
-// Rota de Login de Usuário
+// Rota de Login
 app.post('/login', async (req, res) => {
   const { email, senha } = req.body;
 
   try {
-    const [results] = await db.query('SELECT * FROM usuarios WHERE email = ?', [email]);
+    // Consulta para buscar o usuário pelo email
+    const [user] = await db.query(
+      `SELECT id, nome, email, senha, role_id 
+       FROM juizes WHERE email = ? 
+       UNION 
+       SELECT id, nome, email, senha, role_id 
+       FROM funcionarios_publicos WHERE email = ?`,
+      [email, email]
+    );
 
-    if (results.length === 0) {
+    // Verificação se o usuário foi encontrado
+    if (user.length === 0) {
       return res.status(404).json({ error: 'Usuário não encontrado' });
     }
 
-    const user = results[0];
-    const isMatch = await bcrypt.compare(senha, user.senha);
-    if (!isMatch) return res.status(400).json({ error: 'Senha incorreta' });
+    const usuario = user[0];  // O primeiro registro da consulta
+    const isMatch = await bcrypt.compare(senha, usuario.senha);
 
-    let redirectUrl = '';
-    if (user.role === 'juiz') redirectUrl = '/home-juiz';
-    else if (user.role === 'cidadao') redirectUrl = '/home-cidadao';
-    else if (user.role === 'promotor') redirectUrl = '/home-promotor';
+    // Verificação de senha
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Senha incorreta' });
+    }
+
+    // Lógica de redirecionamento com base no role_id
+    const redirectUrl = usuario.role_id === 1 ? '/home-juiz' : '/home-funcionario';
 
     res.status(200).json({
       message: 'Login realizado com sucesso',
-      userId: user.id,
+      userId: usuario.id,
       redirectUrl,
     });
   } catch (error) {
@@ -86,79 +94,23 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Rota para buscar dados do usuário
-app.get('/api/usuario/:id', async (req, res) => {
-  const userId = req.params.id;
 
-  try {
-    const [results] = await db.query('SELECT email, cpf, telefone, nome_completo FROM usuarios WHERE id = ?', [userId]);
-
-    if (results.length === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado.' });
-    }
-
-    const user = results[0];
-    res.status(200).json({
-      email: user.email,
-      cpf: user.cpf,
-      telefone: user.telefone,
-      nome_completo: user.nome_completo,
-    });
-  } catch (error) {
-    console.error('Erro ao buscar dados do usuário:', error);
-    res.status(500).json({ error: 'Erro ao buscar dados do usuário.' });
-  }
-});
-
-// Rota para atualizar a senha do usuário
-app.put('/api/usuario/:id/senha', async (req, res) => {
-  const userId = req.params.id;
-  const { senha } = req.body;
-
-  if (!senha) {
-    return res.status(400).json({ error: 'A nova senha é obrigatória.' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(senha, 10);
-
-    const [result] = await db.query('UPDATE usuarios SET senha = ? WHERE id = ?', [hashedPassword, userId]);
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Usuário não encontrado.' });
-    }
-    res.status(200).json({ message: 'Senha atualizada com sucesso.' });
-  } catch (error) {
-    console.error('Erro ao atualizar senha:', error);
-    res.status(500).json({ error: 'Erro no servidor durante a atualização da senha.' });
-  }
-});
-
-// Rota para obter todas as audiências
-app.get('/api/audiencias', async (req, res) => {
-  try {
-    const [audiencias] = await db.query('SELECT * FROM audiencias');
-    res.status(200).json(audiencias);
-  } catch (error) {
-    console.error('Erro ao buscar audiências:', error);
-    res.status(500).json({ error: 'Erro ao buscar audiências' });
-  }
-});
-
+// Rota para Criar Audiências (Exclusivo para Juízes)
 app.post('/api/audiencias/gerenciar/criar', async (req, res) => {
-  const { id_juiz, data_audiencia, local, descricao, participantes, tipo_participante } = req.body;
+  const { id_juiz, data_audiencia, local, descricao, participantes } = req.body;
 
-  if (!id_juiz || !data_audiencia || !local || !tipo_participante || !participantes || participantes.length === 0) {
-    return res.status(400).json({ error: 'Todos os campos são obrigatórios e a lista de participantes não pode estar vazia.' });
+  if (!id_juiz || !data_audiencia || !local || !participantes || participantes.length === 0) {
+    return res.status(400).json({ error: 'Todos os campos obrigatórios e lista de participantes não pode estar vazia.' });
   }
 
-  const connection = await db.getConnection(); // Obtenha a conexão do pool
+  const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
 
-    const formattedData = format(new Date(data_audiencia), 'yyyy-MM-dd HH:mm:ss');
+    const formattedData = format(new Date(data_audiencia), 'yyyy-MM-dd HH:mm:ss', { locale: ptBR });
     const [result] = await connection.query(
-      'INSERT INTO audiencias (data_audiencia, local, descricao, id_juiz, tipo_participante) VALUES (?, ?, ?, ?, ?)',
-      [formattedData, local, descricao, id_juiz, tipo_participante]
+      'INSERT INTO audiencias (data_audiencia, local, descricao, id_juiz) VALUES (?, ?, ?, ?)',
+      [formattedData, local, descricao, id_juiz]
     );
 
     const audienciaId = result.insertId;
@@ -177,21 +129,9 @@ app.post('/api/audiencias/gerenciar/criar', async (req, res) => {
     console.error('Erro ao criar audiência:', error);
     res.status(500).json({ error: 'Erro ao criar audiência' });
   } finally {
-    connection.release(); // Libere a conexão para o pool
+    connection.release();
   }
 });
-
-
-app.get('/api/participantes', async (req, res) => {
-  try {
-    const [participantes] = await db.query('SELECT id, nome_completo FROM usuarios WHERE tipo_usuario = ?', ['cidadao']);
-    res.status(200).json(participantes);
-  } catch (error) {
-    console.error('Erro ao buscar participantes:', error);
-    res.status(500).json({ error: 'Erro ao buscar participantes.' });
-  }
-});
-
 
 // Porta do servidor
 const PORT = process.env.PORT || 5000;
