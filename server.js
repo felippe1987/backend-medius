@@ -13,10 +13,11 @@ app.use(cors());
 
 // Configuração do MySQL com Pool de Conexões
 const db = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'root',
-  database: process.env.DB_NAME || 'sjd-bd',
+  host: process.env.DB_HOST  ,
+  user: process.env.DB_USER  ,
+  port: process.env.DB_PORT  ,
+  password: process.env.DB_PASSWORD ,
+  database: process.env.DB_NAME ,
 });
 
 // Configuração do multer para upload de arquivos
@@ -221,7 +222,19 @@ app.get('/api/casos/pastas/:id/notas', async (req, res) => {
     res.status(500).json({ error: 'Erro ao buscar notas' });
   }
 });
-
+app.get('/juizes', async (req, res) => {
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+    const [result] = await connection.query('SELECT * FROM juizes');
+    res.send(result);
+  } catch (err) {
+    console.error('Erro ao buscar usuários:', err);
+    res.status(500).send({ error: 'Erro ao buscar usuários' });
+  } finally {
+    if (connection) connection.release();
+  }
+});
 // Rota para excluir uma nota
 app.delete('/api/casos/notas/:id', async (req, res) => {
   const { id } = req.params;
